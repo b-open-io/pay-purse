@@ -25,9 +25,10 @@ type PayPurse struct {
 	db            *redis.Client
 	SatsPerKb     uint64
 	Address       *script.Address
-	lockingScript *script.Script
+	LockingScript *script.Script
 	unlock        *p2pkh.P2PKH
 	ChangeSplits  uint8
+	utxoKey       string
 }
 
 func NewPayPurse(connString, wif string) (p *PayPurse, err error) {
@@ -36,7 +37,7 @@ func NewPayPurse(connString, wif string) (p *PayPurse, err error) {
 		return nil, err
 	} else if p.Address, err = script.NewAddressFromPublicKey(p.pk.PubKey(), true); err != nil {
 		return nil, err
-	} else if p.lockingScript, err = p2pkh.Lock(p.Address); err != nil {
+	} else if p.LockingScript, err = p2pkh.Lock(p.Address); err != nil {
 		return nil, err
 	} else if p.unlock, err = p2pkh.Unlock(p.pk, nil); err != nil {
 		return nil, err
@@ -44,6 +45,7 @@ func NewPayPurse(connString, wif string) (p *PayPurse, err error) {
 		return nil, err
 	} else {
 		p.db = redis.NewClient(opts)
+		p.utxoKey = "u:" + p.Address.AddressString
 	}
 	return
 }
@@ -54,21 +56,18 @@ func (p *PayPurse) UpdateFromTx(ctx context.Context, tx *transaction.Transaction
 			Txid:        *txin.SourceTXID,
 			OutputIndex: txin.SourceTxOutIndex,
 		}
-		if err := p.db.ZRem(ctx, "u:"+p.Address.AddressString, outpoint.String()).Err(); err != nil {
+		if err := p.db.ZRem(ctx, p.utxoKey, outpoint.String()).Err(); err != nil {
 			return err
 		}
 	}
 	txid := tx.TxID()
-	if err := p.db.HSet(ctx, "rawtx", txid.String(), tx.Bytes()).Err(); err != nil {
-		return err
-	}
 	for vout, txout := range tx.Outputs {
 		outpoint := &overlay.Outpoint{
 			Txid:        *txid,
 			OutputIndex: uint32(vout),
 		}
-		if bytes.Equal(*txout.LockingScript, *p.lockingScript) {
-			if err := p.db.ZAdd(ctx, "u:"+p.Address.AddressString, redis.Z{
+		if bytes.Equal(*txout.LockingScript, *p.LockingScript) {
+			if err := p.db.ZAdd(ctx, p.utxoKey, redis.Z{
 				Score:  float64(txout.Satoshis),
 				Member: outpoint.String(),
 			}).Err(); err != nil {
@@ -112,7 +111,7 @@ func (p *PayPurse) FundAndSign(ctx context.Context, tx *transaction.Transaction,
 	}
 	for range p.ChangeSplits {
 		tx.AddOutput(&transaction.TransactionOutput{
-			LockingScript: p.lockingScript,
+			LockingScript: p.LockingScript,
 			Change:        true,
 		})
 	}
@@ -128,7 +127,7 @@ func (p *PayPurse) FundAndSign(ctx context.Context, tx *transaction.Transaction,
 
 func (p *PayPurse) LockUtxos(ctx context.Context, satoshis uint64) ([]*transaction.UTXO, error) {
 	results, err := p.db.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
-		Key:     "u:" + p.Address.AddressString,
+		Key:     p.utxoKey,
 		ByScore: true,
 		Rev:     true,
 		Count:   25,
@@ -153,7 +152,7 @@ func (p *PayPurse) LockUtxos(ctx context.Context, satoshis uint64) ([]*transacti
 			utxos = append(utxos, &transaction.UTXO{
 				TxID:                    &outpoint.Txid,
 				Vout:                    outpoint.OutputIndex,
-				LockingScript:           p.lockingScript,
+				LockingScript:           p.LockingScript,
 				Satoshis:                uint64(result.Score),
 				UnlockingScriptTemplate: p.unlock,
 			})
@@ -181,7 +180,7 @@ type WOCUtxo struct {
 
 func (p *PayPurse) Balance(ctx context.Context) (bal uint64, count int, err error) {
 	if results, err := p.db.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
-		Key:     "u:" + p.Address.AddressString,
+		Key:     p.utxoKey,
 		ByScore: true,
 		Rev:     true,
 		Count:   25,
@@ -207,13 +206,13 @@ func (p *PayPurse) RefreshBalance(ctx context.Context) (bal uint64, count int, e
 			log.Println(err)
 			return 0, 0, err
 		}
-		if p.db.Del(ctx, "u:"+p.Address.AddressString).Err() != nil {
+		if p.db.Del(ctx, p.utxoKey).Err() != nil {
 			log.Println(err)
 		}
 		for _, u := range response.Result {
 			if u.IsSpent {
 				continue
-			} else if err := p.db.ZAdd(ctx, "u:"+p.Address.AddressString, redis.Z{
+			} else if err := p.db.ZAdd(ctx, p.utxoKey, redis.Z{
 				Score:  float64(u.Value),
 				Member: fmt.Sprintf("%s.%d", u.TxHash, u.TxPos),
 			}).Err(); err != nil {
