@@ -20,7 +20,7 @@ import (
 
 const SATS_PER_KB = uint64(10)
 
-type payPurse struct {
+type PayPurse struct {
 	pk            *ec.PrivateKey
 	db            *redis.Client
 	SatsPerKb     uint64
@@ -30,8 +30,8 @@ type payPurse struct {
 	ChangeSplits  uint8
 }
 
-func NewPayPurse(connString, wif string) (p *payPurse, err error) {
-	p = &payPurse{}
+func NewPayPurse(connString, wif string) (p *PayPurse, err error) {
+	p = &PayPurse{}
 	if p.pk, err = ec.PrivateKeyFromWif(wif); err != nil {
 		return nil, err
 	} else if p.Address, err = script.NewAddressFromPublicKey(p.pk.PubKey(), true); err != nil {
@@ -48,7 +48,7 @@ func NewPayPurse(connString, wif string) (p *payPurse, err error) {
 	return
 }
 
-func (p *payPurse) UpdateFromTx(ctx context.Context, tx *transaction.Transaction) error {
+func (p *PayPurse) UpdateFromTx(ctx context.Context, tx *transaction.Transaction) error {
 	for _, txin := range tx.Inputs {
 		outpoint := &overlay.Outpoint{
 			Txid:        *txin.SourceTXID,
@@ -76,7 +76,7 @@ func (p *payPurse) UpdateFromTx(ctx context.Context, tx *transaction.Transaction
 	return nil
 }
 
-func (p *payPurse) FundAndSign(ctx context.Context, tx *transaction.Transaction, fundOutputs bool) error {
+func (p *PayPurse) FundAndSign(ctx context.Context, tx *transaction.Transaction, fundOutputs bool) error {
 	feeModel := &feemodel.SatoshisPerKilobyte{Satoshis: p.SatsPerKb}
 	satsIn := uint64(0)
 	for _, txin := range tx.Inputs {
@@ -123,7 +123,7 @@ func (p *payPurse) FundAndSign(ctx context.Context, tx *transaction.Transaction,
 	return nil
 }
 
-func (p *payPurse) LockUtxos(ctx context.Context, satoshis uint64) ([]*transaction.UTXO, error) {
+func (p *PayPurse) LockUtxos(ctx context.Context, satoshis uint64) ([]*transaction.UTXO, error) {
 	results, err := p.db.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 		Key:     "u:" + p.Address.AddressString,
 		ByScore: true,
@@ -176,7 +176,7 @@ type WOCUtxo struct {
 	Status  string `json:"status"`
 }
 
-func (p *payPurse) Balance(ctx context.Context) (bal uint64, count int, err error) {
+func (p *PayPurse) Balance(ctx context.Context) (bal uint64, count int, err error) {
 	if results, err := p.db.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 		Key:     "u:" + p.Address.AddressString,
 		ByScore: true,
@@ -190,7 +190,7 @@ func (p *payPurse) Balance(ctx context.Context) (bal uint64, count int, err erro
 	}
 	return
 }
-func (p *payPurse) RefreshBalance(ctx context.Context, tx *transaction.Transaction) error {
+func (p *PayPurse) RefreshBalance(ctx context.Context, tx *transaction.Transaction) error {
 	if resp, err := http.Get("https://api.whatsonchain.com/v1/bsv/main/address/" + p.Address.AddressString + "/unspent/all"); err != nil {
 		log.Println(err)
 		return err
