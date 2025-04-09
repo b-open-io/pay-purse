@@ -59,6 +59,9 @@ func (p *PayPurse) UpdateFromTx(ctx context.Context, tx *transaction.Transaction
 		}
 	}
 	txid := tx.TxID()
+	if err := p.db.HSet(ctx, "rawtx", txid.String(), tx.Bytes()).Err(); err != nil {
+		return err
+	}
 	for vout, txout := range tx.Outputs {
 		outpoint := &overlay.Outpoint{
 			Txid:        *txid,
@@ -190,19 +193,19 @@ func (p *PayPurse) Balance(ctx context.Context) (bal uint64, count int, err erro
 	}
 	return
 }
-func (p *PayPurse) RefreshBalance(ctx context.Context, tx *transaction.Transaction) error {
+func (p *PayPurse) RefreshBalance(ctx context.Context) (bal uint64, count int, err error) {
 	if resp, err := http.Get("https://api.whatsonchain.com/v1/bsv/main/address/" + p.Address.AddressString + "/unspent/all"); err != nil {
 		log.Println(err)
-		return err
+		return 0, 0, err
 	} else if resp.StatusCode != http.StatusOK {
 		log.Println("Error: ", resp.Status)
-		return transaction.ErrEmptyPreviousTx
+		return 0, 0, transaction.ErrEmptyPreviousTx
 	} else if resp.Body != nil {
 		defer resp.Body.Close()
 		var response WOCResponse
 		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 			log.Println(err)
-			return err
+			return 0, 0, err
 		}
 		if p.db.Del(ctx, "u:"+p.Address.AddressString).Err() != nil {
 			log.Println(err)
@@ -215,8 +218,11 @@ func (p *PayPurse) RefreshBalance(ctx context.Context, tx *transaction.Transacti
 				Member: fmt.Sprintf("%s.%d", u.TxHash, u.TxPos),
 			}).Err(); err != nil {
 				log.Println(err)
+			} else {
+				bal += u.Value
+				count++
 			}
 		}
 	}
-	return nil
+	return
 }
